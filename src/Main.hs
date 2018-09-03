@@ -1,7 +1,7 @@
 
 -- what's missing from the current parser?
 -- - numeric types: 0, succ t, pred t, iszero t
--- - parens and paren-matching
+-- DONE parens and paren-matching
 -- parse time errors:
 --   DONE (kinda) overflow info.. i.e. "true false" should error
 --     - responsibility of caller, not parser
@@ -19,15 +19,76 @@ main = do
   putStrLn "hello world"
   putStrLn $ "words are: " ++ testexpr
   putStr "result is: "
-  print (utparse (words testexpr) Nothing)
+  print $ utast testexpr
   putStrLn $ "words are: " ++ testexpr2
   putStr "result is: "
-  print (utparse (words testexpr2) Nothing)
+  print $ utast testexpr2
+  putStrLn $ "words are: " ++ testexpr3
+  putStr "result is: "
+  print $ utast testexpr3
 
-testexpr :: String
 testexpr = "if true then false else true"
 testexpr2 = "if if false then false else false \
              \ then false else if true then true else false"
+testexpr3 = "if (if ((false)) then (false) else false) \
+             \ then false else (if true then true else (false))"
+
+-- 'Term' is basically ASTNode
+-- We parse into a tree of Term s, but we don't check semantic
+-- correctness until evaluation. Therefore we could end up with
+-- nonsensical Term subtrees like (Cond (Succ 0) True False) or
+-- (Succ True).
+-- adding 0 value and succ, pred, iszero to represent arithexprs
+-- what's a good way really to express termination states?
+--  - i wanted to have a datatype for values that are the
+--    leaves of the Term tree, but not sure how to do this really.
+data Term a = Cond (Term a) (Term a) (Term a)
+            | Succ (Term a)
+            | Pred (Term a)
+            | IsZero (Term a)
+            | True'
+            | False'
+            | Zero'
+            | Undefined' -- cannot be evaluated
+            deriving (Eq, Show)
+
+-------------------
+-- LEXING --------
+-------------------
+-- 1. i want to add parens, so now we have to worry about lexing
+-- 2. we need something like 'words' from prelude, but also with
+--    consideration for parens
+-- 3. we could have a 'smart' lexer that does token matching,
+--    but this is being done during parsing anyway, so we might as
+--    well just have a 'dumb' lexer that just splits strings.
+
+isParen :: Char -> Bool
+isParen '(' = True
+isParen ')' = True
+isParen _   = False
+
+-- sliceString takes a 'previous' string array and returns
+-- elements a copy that moves the parens to a new element
+sliceString :: String -> [] String -> [] String
+sliceString "" prev  = prev
+sliceString (x:xs) [] = sliceString xs [[x]]
+sliceString (x:xs) prev = if (isParen x)
+                          then sliceString xs (prev ++ [[x]])
+                          else if (isParen $ last (last prev))
+                               then sliceString xs (prev ++ [[x]])
+                               else sliceString xs $ appendLast prev x
+
+appendLast :: [[a]] -> a -> [[a]]
+appendLast [] a  = [[a]]
+appendLast arr a = (init arr) ++ [(last arr) ++ [a]]
+
+concatSlice :: [String] -> [String]
+concatSlice []     = []
+concatSlice (x:xs) = (sliceString x []) ++ concatSlice xs
+
+utlex :: String -> [] String
+utlex "" = []
+utlex s = concatSlice $ words s
 
 -------------------
 -- PARSING --------
@@ -70,6 +131,7 @@ testexpr2 = "if if false then false else false \
 
 data ParseError = MissingThenExpr ([] String)
                 | MissingElseExpr ([] String)
+                | MissingClosingParen ([] String)
                 | UnexpectedToken ([] String)
                 | UnmatchableToken ([] String) String
                 | UnexpectedEndOfInput
@@ -87,10 +149,13 @@ utparse :: [] String -> Maybe String -> ParseResult a
 utparse ("true" :xs) Nothing       = Right $ PT True' xs
 utparse ("false":xs) Nothing       = Right $ PT False' xs
 utparse ("if"   :xs) Nothing       = utparseif xs
+utparse ("("    :xs) Nothing       = utparseparen xs
 utparse ("then" :xs) (Just "then") = utparse xs Nothing
 utparse ("else" :xs) (Just "else") = utparse xs Nothing
+utparse (")"    :xs) (Just ")")    = Right $ PT Undefined' xs
 utparse x  (Just "then") = Left $ MissingThenExpr x
 utparse x  (Just "else") = Left $ MissingElseExpr x
+utparse x  (Just ")")    = Left $ MissingClosingParen x
 utparse [] _             = Left $ UnexpectedEndOfInput
 utparse x  (Just y)      = Left $ UnmatchableToken x y
 utparse x  Nothing       = Left $ UnexpectedToken x
@@ -106,25 +171,20 @@ utparseif x = do
   (PT elseTerm elseStr) <- utparse thenStr (Just "else")
   pure $ PT (Cond ifTerm thenTerm elseTerm) elseStr
 
--- 'Term' is basically ASTNode
--- We parse into a tree of Term s, but we don't check semantic
--- correctness until evaluation. Therefore we could end up with
--- nonsensical Term subtrees like (Cond (Succ 0) True False) or
--- (Succ True).
--- adding 0 value and succ, pred, iszero to represent arithexprs
--- what's a good way really to express termination states?
---  - i wanted to have a datatype for values that are the
---    leaves of the Term tree, but not sure how to do this really.
-data Term a = Cond (Term a) (Term a) (Term a)
-            | Succ (Term a)
-            | Pred (Term a)
-            | IsZero (Term a)
-            | True'
-            | False'
-            | Zero'
-            deriving (Eq, Show)
+-- parse parens while propagating error states
+utparseparen :: [] String -> ParseResult a
+utparseparen x = do
+  (PT pOpenTerm pOpenStr)  <- utparse x        Nothing
+  (PT _         pCloseStr) <- utparse pOpenStr (Just ")")
+  pure $ PT pOpenTerm pCloseStr
 
--- evaluation
+-- convenience function for lexing + parsing
+utast :: String -> ParseResult a
+utast str = utparse (utlex str) Nothing
+
+-------------------
+-- EVALUATION -----
+-------------------
 uteval :: Term a -> Term a
 uteval True' = True'
 uteval False' = False'
