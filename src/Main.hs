@@ -1,6 +1,6 @@
 
 -- what's missing from the current parser?
--- - numeric types: 0, succ t, pred t, iszero t
+-- DONE numeric types: 0, succ t, pred t, iszero t
 -- DONE parens and paren-matching
 -- parse time errors:
 --   DONE (kinda) overflow info.. i.e. "true false" should error
@@ -17,21 +17,23 @@ module Main where
 main :: IO ()
 main = do
   putStrLn "hello world"
-  putStrLn $ "words are: " ++ testexpr
+  printASTwithStr testexpr
+  printASTwithStr testexpr2
+  printASTwithStr testexpr3
+  printASTwithStr testexpr4
+
+printASTwithStr :: String -> IO ()
+printASTwithStr s = do
+  putStrLn $ "words are: " ++ s
   putStr "result is: "
-  print $ utast testexpr
-  putStrLn $ "words are: " ++ testexpr2
-  putStr "result is: "
-  print $ utast testexpr2
-  putStrLn $ "words are: " ++ testexpr3
-  putStr "result is: "
-  print $ utast testexpr3
+  print $ utast s
 
 testexpr = "if true then false else true"
 testexpr2 = "if if false then false else false \
              \ then false else if true then true else false"
 testexpr3 = "if (if ((false)) then (false) else false) \
              \ then false else (if true then true else (false))"
+testexpr4 = "succ pred succ (if 0 then succ 0 else (pred succ 0))"
 
 -- 'Term' is basically ASTNode
 -- We parse into a tree of Term s, but we don't check semantic
@@ -146,13 +148,17 @@ type ParseResult a = Either ParseError (ParsedTerm a)
 -- utparse takes a string array as input, along with an 'expected'
 -- parse token.
 utparse :: [] String -> Maybe String -> ParseResult a
-utparse ("true" :xs) Nothing       = Right $ PT True' xs
-utparse ("false":xs) Nothing       = Right $ PT False' xs
-utparse ("if"   :xs) Nothing       = utparseif xs
-utparse ("("    :xs) Nothing       = utparseparen xs
-utparse ("then" :xs) (Just "then") = utparse xs Nothing
-utparse ("else" :xs) (Just "else") = utparse xs Nothing
-utparse (")"    :xs) (Just ")")    = Right $ PT Undefined' xs
+utparse ("0"     :xs) Nothing       = Right $ PT Zero' xs
+utparse ("true"  :xs) Nothing       = Right $ PT True' xs
+utparse ("false" :xs) Nothing       = Right $ PT False' xs
+utparse ("succ"  :xs) Nothing       = utparsemeta xs Succ
+utparse ("pred"  :xs) Nothing       = utparsemeta xs Pred
+utparse ("iszero":xs) Nothing       = utparsemeta xs IsZero
+utparse ("if"    :xs) Nothing       = utparseif xs
+utparse ("("     :xs) Nothing       = utparseparen xs
+utparse ("then"  :xs) (Just "then") = utparse xs Nothing
+utparse ("else"  :xs) (Just "else") = utparse xs Nothing
+utparse (")"     :xs) (Just ")")    = Right $ PT Undefined' xs
 utparse x  (Just "then") = Left $ MissingThenExpr x
 utparse x  (Just "else") = Left $ MissingElseExpr x
 utparse x  (Just ")")    = Left $ MissingClosingParen x
@@ -177,6 +183,12 @@ utparseparen x = do
   (PT pOpenTerm pOpenStr)  <- utparse x        Nothing
   (PT _         pCloseStr) <- utparse pOpenStr (Just ")")
   pure $ PT pOpenTerm pCloseStr
+
+-- for parsing Succ, Pred, and IsZero
+utparsemeta :: [] String -> (Term a -> Term b) -> ParseResult b
+utparsemeta x f = do
+  (PT term str) <- utparse x Nothing
+  pure $ PT (f term) str
 
 -- convenience function for lexing + parsing
 utast :: String -> ParseResult a
